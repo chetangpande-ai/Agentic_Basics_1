@@ -42,10 +42,6 @@ def interpreter_requires_environment():
         if 'PYTHONHOME' in os.environ:
             __cached_interp_requires_environment = True
             return True
-        # cannot run subprocess, assume we don't need it
-        if not support.has_subprocess_support:
-            __cached_interp_requires_environment = False
-            return False
 
         # Try running an interpreter with -E to see if it works or not.
         try:
@@ -64,8 +60,8 @@ class _PythonRunResult(collections.namedtuple("_PythonRunResult",
     """Helper for reporting Python subprocess run results"""
     def fail(self, cmd_line):
         """Provide helpful details about failed subcommand runs"""
-        # Limit to 300 lines of ASCII characters
-        maxlen = 300 * 100
+        # Limit to 80 lines to ASCII characters
+        maxlen = 80 * 100
         out, err = self.out, self.err
         if len(out) > maxlen:
             out = b'(... truncated stdout ...)' + out[-maxlen:]
@@ -91,7 +87,6 @@ class _PythonRunResult(collections.namedtuple("_PythonRunResult",
 
 
 # Executing the interpreter in a subprocess
-@support.requires_subprocess()
 def run_python_until_end(*args, **env_vars):
     env_required = interpreter_requires_environment()
     cwd = env_vars.pop('__cwd', None)
@@ -144,7 +139,6 @@ def run_python_until_end(*args, **env_vars):
     return _PythonRunResult(rc, out, err), cmd_line
 
 
-@support.requires_subprocess()
 def _assert_python(expected_success, /, *args, **env_vars):
     res, cmd_line = run_python_until_end(*args, **env_vars)
     if (res.rc and expected_success) or (not res.rc and not expected_success):
@@ -177,7 +171,6 @@ def assert_python_failure(*args, **env_vars):
     return _assert_python(False, *args, **env_vars)
 
 
-@support.requires_subprocess()
 def spawn_python(*args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw):
     """Run a Python subprocess with the given arguments.
 
@@ -218,13 +211,9 @@ def make_script(script_dir, script_basename, source, omit_suffix=False):
     if not omit_suffix:
         script_filename += os.extsep + 'py'
     script_name = os.path.join(script_dir, script_filename)
-    if isinstance(source, str):
-        # The script should be encoded to UTF-8, the default string encoding
-        with open(script_name, 'w', encoding='utf-8') as script_file:
-            script_file.write(source)
-    else:
-        with open(script_name, 'wb') as script_file:
-            script_file.write(source)
+    # The script should be encoded to UTF-8, the default string encoding
+    with open(script_name, 'w', encoding='utf-8') as script_file:
+        script_file.write(source)
     importlib.invalidate_caches()
     return script_name
 
@@ -284,7 +273,6 @@ def make_zip_pkg(zip_dir, zip_basename, pkg_name, script_basename,
     return zip_name, os.path.join(zip_name, script_name_in_zip)
 
 
-@support.requires_subprocess()
 def run_test_script(script):
     # use -u to try to get the full output if the test hangs or crash
     if support.verbose:

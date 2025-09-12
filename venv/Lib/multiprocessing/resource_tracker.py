@@ -51,65 +51,25 @@ if os.name == 'posix':
     })
 
 
-class ReentrantCallError(RuntimeError):
-    pass
-
-
 class ResourceTracker(object):
 
     def __init__(self):
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._fd = None
         self._pid = None
 
-    def _reentrant_call_error(self):
-        # gh-109629: this happens if an explicit call to the ResourceTracker
-        # gets interrupted by a garbage collection, invoking a finalizer (*)
-        # that itself calls back into ResourceTracker.
-        #   (*) for example the SemLock finalizer
-        raise ReentrantCallError(
-            "Reentrant call into the multiprocessing resource tracker")
+    def _stop(self):
+        with self._lock:
+            if self._fd is None:
+                # not running
+                return
 
-    def __del__(self):
-        # making sure child processess are cleaned before ResourceTracker
-        # gets destructed.
-        # see https://github.com/python/cpython/issues/88887
-        self._stop(use_blocking_lock=False)
+            # closing the "alive" file descriptor stops main()
+            os.close(self._fd)
+            self._fd = None
 
-    def _stop(self, use_blocking_lock=True):
-        if use_blocking_lock:
-            with self._lock:
-                self._stop_locked()
-        else:
-            acquired = self._lock.acquire(blocking=False)
-            try:
-                self._stop_locked()
-            finally:
-                if acquired:
-                    self._lock.release()
-
-    def _stop_locked(
-        self,
-        close=os.close,
-        waitpid=os.waitpid,
-        waitstatus_to_exitcode=os.waitstatus_to_exitcode,
-    ):
-        # This shouldn't happen (it might when called by a finalizer)
-        # so we check for it anyway.
-        if self._lock._recursion_count() > 1:
-            return self._reentrant_call_error()
-        if self._fd is None:
-            # not running
-            return
-        if self._pid is None:
-            return
-
-        # closing the "alive" file descriptor stops main()
-        close(self._fd)
-        self._fd = None
-
-        waitpid(self._pid, 0)
-        self._pid = None
+            os.waitpid(self._pid, 0)
+            self._pid = None
 
     def getfd(self):
         self.ensure_running()
@@ -121,9 +81,6 @@ class ResourceTracker(object):
         This can be run from any process.  Usually a child process will use
         the resource created by its parent.'''
         with self._lock:
-            if self._lock._recursion_count() > 1:
-                # The code below is certainly not reentrant-safe, so bail out
-                return self._reentrant_call_error()
             if self._fd is not None:
                 # resource tracker was launched before, is it still running?
                 if self._check_alive():
@@ -166,14 +123,13 @@ class ResourceTracker(object):
                 # that can make the child die before it registers signal handlers
                 # for SIGINT and SIGTERM. The mask is unregistered after spawning
                 # the child.
-                prev_sigmask = None
                 try:
                     if _HAVE_SIGMASK:
-                        prev_sigmask = signal.pthread_sigmask(signal.SIG_BLOCK, _IGNORED_SIGNALS)
+                        signal.pthread_sigmask(signal.SIG_BLOCK, _IGNORED_SIGNALS)
                     pid = util.spawnv_passfds(exe, args, fds_to_pass)
                 finally:
-                    if prev_sigmask is not None:
-                        signal.pthread_sigmask(signal.SIG_SETMASK, prev_sigmask)
+                    if _HAVE_SIGMASK:
+                        signal.pthread_sigmask(signal.SIG_UNBLOCK, _IGNORED_SIGNALS)
             except:
                 os.close(w)
                 raise
@@ -203,17 +159,7 @@ class ResourceTracker(object):
         self._send('UNREGISTER', name, rtype)
 
     def _send(self, cmd, name, rtype):
-        try:
-            self.ensure_running()
-        except ReentrantCallError:
-            # The code below might or might not work, depending on whether
-            # the resource tracker was already running and still alive.
-            # Better warn the user.
-            # (XXX is warnings.warn itself reentrant-safe? :-)
-            warnings.warn(
-                f"ResourceTracker called reentrantly for resource cleanup, "
-                f"which is unsupported. "
-                f"The {rtype} object {name!r} might leak.")
+        self.ensure_running()
         msg = '{0}:{1}:{2}\n'.format(cmd, name, rtype).encode('ascii')
         if len(msg) > 512:
             # posix guarantees that writes to a pipe of less than PIPE_BUF
@@ -229,7 +175,6 @@ ensure_running = _resource_tracker.ensure_running
 register = _resource_tracker.register
 unregister = _resource_tracker.unregister
 getfd = _resource_tracker.getfd
-
 
 def main(fd):
     '''Run resource tracker.'''

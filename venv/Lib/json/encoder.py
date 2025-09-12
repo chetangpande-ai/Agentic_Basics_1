@@ -30,7 +30,6 @@ ESCAPE_DCT = {
 for i in range(0x20):
     ESCAPE_DCT.setdefault(chr(i), '\\u{0:04x}'.format(i))
     #ESCAPE_DCT.setdefault(chr(i), '\\u%04x' % (i,))
-del i
 
 INFINITY = float('inf')
 
@@ -108,8 +107,8 @@ class JSONEncoder(object):
         """Constructor for JSONEncoder, with sensible defaults.
 
         If skipkeys is false, then it is a TypeError to attempt
-        encoding of keys that are not str, int, float, bool or None.
-        If skipkeys is True, such items are simply skipped.
+        encoding of keys that are not str, int, float or None.  If
+        skipkeys is True, such items are simply skipped.
 
         If ensure_ascii is true, the output is guaranteed to be str
         objects with all incoming non-ASCII characters escaped.  If
@@ -174,7 +173,7 @@ class JSONEncoder(object):
                 else:
                     return list(iterable)
                 # Let the base class default method raise the TypeError
-                return super().default(o)
+                return JSONEncoder.default(self, o)
 
         """
         raise TypeError(f'Object of type {o.__class__.__name__} '

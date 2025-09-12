@@ -49,11 +49,11 @@ def reduce_array(a):
 reduction.register(array.array, reduce_array)
 
 view_types = [type(getattr({}, name)()) for name in ('items','keys','values')]
-def rebuild_as_list(obj):
-    return list, (list(obj),)
-for view_type in view_types:
-    reduction.register(view_type, rebuild_as_list)
-del view_type, view_types
+if view_types[0] is not list:       # only needed in Py3.0
+    def rebuild_as_list(obj):
+        return list, (list(obj),)
+    for view_type in view_types:
+        reduction.register(view_type, rebuild_as_list)
 
 #
 # Type for identifying shared objects
@@ -153,7 +153,7 @@ class Server(object):
         Listener, Client = listener_client[serializer]
 
         # do authentication later
-        self.listener = Listener(address=address, backlog=128)
+        self.listener = Listener(address=address, backlog=16)
         self.address = self.listener.address
 
         self.id_to_obj = {'0': (None, ())}
@@ -433,6 +433,7 @@ class Server(object):
                     self.id_to_refcount[ident] = 1
                     self.id_to_obj[ident] = \
                         self.id_to_local_proxy_obj[ident]
+                    obj, exposed, gettypeid = self.id_to_obj[ident]
                     util.debug('Server re-enabled tracking & INCREF %r', ident)
                 else:
                     raise ke
@@ -496,7 +497,7 @@ class BaseManager(object):
     _Server = Server
 
     def __init__(self, address=None, authkey=None, serializer='pickle',
-                 ctx=None, *, shutdown_timeout=1.0):
+                 ctx=None):
         if authkey is None:
             authkey = process.current_process().authkey
         self._address = address     # XXX not final address if eg ('', 0)
@@ -506,7 +507,6 @@ class BaseManager(object):
         self._serializer = serializer
         self._Listener, self._Client = listener_client[serializer]
         self._ctx = ctx or get_context()
-        self._shutdown_timeout = shutdown_timeout
 
     def get_server(self):
         '''
@@ -570,8 +570,8 @@ class BaseManager(object):
         self._state.value = State.STARTED
         self.shutdown = util.Finalize(
             self, type(self)._finalize_manager,
-            args=(self._process, self._address, self._authkey, self._state,
-                  self._Client, self._shutdown_timeout),
+            args=(self._process, self._address, self._authkey,
+                  self._state, self._Client),
             exitpriority=0
             )
 
@@ -656,8 +656,7 @@ class BaseManager(object):
         self.shutdown()
 
     @staticmethod
-    def _finalize_manager(process, address, authkey, state, _Client,
-                          shutdown_timeout):
+    def _finalize_manager(process, address, authkey, state, _Client):
         '''
         Shutdown the manager process; will be registered as a finalizer
         '''
@@ -672,17 +671,15 @@ class BaseManager(object):
             except Exception:
                 pass
 
-            process.join(timeout=shutdown_timeout)
+            process.join(timeout=1.0)
             if process.is_alive():
                 util.info('manager still alive')
                 if hasattr(process, 'terminate'):
                     util.info('trying to `terminate()` manager process')
                     process.terminate()
-                    process.join(timeout=shutdown_timeout)
+                    process.join(timeout=1.0)
                     if process.is_alive():
                         util.info('manager still alive after terminate')
-                        process.kill()
-                        process.join()
 
         state.value = State.SHUTDOWN
         try:
@@ -755,29 +752,22 @@ class BaseProxy(object):
     _address_to_local = {}
     _mutex = util.ForkAwareThreadLock()
 
-    # Each instance gets a `_serial` number. Unlike `id(...)`, this number
-    # is never reused.
-    _next_serial = 1
-
     def __init__(self, token, serializer, manager=None,
                  authkey=None, exposed=None, incref=True, manager_owned=False):
         with BaseProxy._mutex:
-            tls_serials = BaseProxy._address_to_local.get(token.address, None)
-            if tls_serials is None:
-                tls_serials = util.ForkAwareLocal(), ProcessLocalSet()
-                BaseProxy._address_to_local[token.address] = tls_serials
-
-            self._serial = BaseProxy._next_serial
-            BaseProxy._next_serial += 1
+            tls_idset = BaseProxy._address_to_local.get(token.address, None)
+            if tls_idset is None:
+                tls_idset = util.ForkAwareLocal(), ProcessLocalSet()
+                BaseProxy._address_to_local[token.address] = tls_idset
 
         # self._tls is used to record the connection used by this
         # thread to communicate with the manager at token.address
-        self._tls = tls_serials[0]
+        self._tls = tls_idset[0]
 
-        # self._all_serials is a set used to record the identities of all
-        # shared objects for which the current process owns references and
+        # self._idset is used to record the identities of all shared
+        # objects for which the current process owns references and
         # which are in the manager at token.address
-        self._all_serials = tls_serials[1]
+        self._idset = tls_idset[1]
 
         self._token = token
         self._id = self._token.id
@@ -857,20 +847,20 @@ class BaseProxy(object):
         dispatch(conn, None, 'incref', (self._id,))
         util.debug('INCREF %r', self._token.id)
 
-        self._all_serials.add(self._serial)
+        self._idset.add(self._id)
 
         state = self._manager and self._manager._state
 
         self._close = util.Finalize(
             self, BaseProxy._decref,
-            args=(self._token, self._serial, self._authkey, state,
-                  self._tls, self._all_serials, self._Client),
+            args=(self._token, self._authkey, state,
+                  self._tls, self._idset, self._Client),
             exitpriority=10
             )
 
     @staticmethod
-    def _decref(token, serial, authkey, state, tls, idset, _Client):
-        idset.discard(serial)
+    def _decref(token, authkey, state, tls, idset, _Client):
+        idset.discard(token.id)
 
         # check whether manager is still alive
         if state is None or state.value == State.STARTED:
@@ -1348,6 +1338,7 @@ if HAS_SHMEM:
 
         def __del__(self):
             util.debug(f"{self.__class__.__name__}.__del__ by pid {getpid()}")
+            pass
 
         def get_server(self):
             'Better than monkeypatching for now; merge into Server ultimately'

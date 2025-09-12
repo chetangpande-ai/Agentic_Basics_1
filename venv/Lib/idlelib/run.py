@@ -52,13 +52,13 @@ def idle_formatwarning(message, category, filename, lineno, line=None):
     """Format warnings the IDLE way."""
 
     s = "\nWarning (from warnings module):\n"
-    s += f'  File \"{filename}\", line {lineno}\n'
+    s += '  File \"%s\", line %s\n' % (filename, lineno)
     if line is None:
         line = linecache.getline(filename, lineno)
     line = line.strip()
     if line:
         s += "    %s\n" % line
-    s += f"{category.__name__}: {message}\n"
+    s += "%s: %s\n" % (category.__name__, message)
     return s
 
 def idle_showwarning_subproc(
@@ -101,11 +101,11 @@ def handle_tk_events(tcl=tcl):
 
 # Thread shared globals: Establish a queue between a subthread (which handles
 # the socket) and the main thread (which runs user code), plus global
-# completion, exit and interruptible (the main thread) flags:
+# completion, exit and interruptable (the main thread) flags:
 
 exit_now = False
 quitting = False
-interruptible = False
+interruptable = False
 
 def main(del_exitfunc=False):
     """Start the Python execution server in a subprocess
@@ -140,12 +140,11 @@ def main(del_exitfunc=False):
 
     capture_warnings(True)
     sys.argv[:] = [""]
-    threading.Thread(target=manage_socket,
-                     name='SockThread',
-                     args=((LOCALHOST, port),),
-                     daemon=True,
-                    ).start()
-
+    sockthread = threading.Thread(target=manage_socket,
+                                  name='SockThread',
+                                  args=((LOCALHOST, port),))
+    sockthread.daemon = True
+    sockthread.start()
     while True:
         try:
             if exit_now:
@@ -240,7 +239,6 @@ def print_exception():
     efile = sys.stderr
     typ, val, tb = excinfo = sys.exc_info()
     sys.last_type, sys.last_value, sys.last_traceback = excinfo
-    sys.last_exc = val
     seen = set()
 
     def print_exc(typ, exc, tb):
@@ -436,9 +434,6 @@ class StdioFile(io.TextIOBase):
 
     def __init__(self, shell, tags, encoding='utf-8', errors='strict'):
         self.shell = shell
-        # GH-78889: accessing unpickleable attributes freezes Shell.
-        # IDLE only needs methods; allow 'width' for possible use.
-        self.shell._RPCProxy__attributes = {'width': 1}
         self.tags = tags
         self._encoding = encoding
         self._errors = errors
@@ -575,14 +570,14 @@ class Executive:
             self.locals = {}
 
     def runcode(self, code):
-        global interruptible
+        global interruptable
         try:
             self.user_exc_info = None
-            interruptible = True
+            interruptable = True
             try:
                 exec(code, self.locals)
             finally:
-                interruptible = False
+                interruptable = False
         except SystemExit as e:
             if e.args:  # SystemExit called with an argument.
                 ob = e.args[0]
@@ -608,7 +603,7 @@ class Executive:
             flush_stdout()
 
     def interrupt_the_server(self):
-        if interruptible:
+        if interruptable:
             thread.interrupt_main()
 
     def start_the_debugger(self, gui_adap_oid):
@@ -626,7 +621,7 @@ class Executive:
 
     def stackviewer(self, flist_oid=None):
         if self.user_exc_info:
-            _, exc, tb = self.user_exc_info
+            typ, val, tb = self.user_exc_info
         else:
             return None
         flist = None
@@ -634,8 +629,9 @@ class Executive:
             flist = self.rpchandler.get_remote_proxy(flist_oid)
         while tb and tb.tb_frame.f_globals["__name__"] in ["rpc", "run"]:
             tb = tb.tb_next
-        exc.__traceback__ = tb
-        item = stackviewer.StackTreeItem(exc, flist)
+        sys.last_type = typ
+        sys.last_value = val
+        item = stackviewer.StackTreeItem(flist, tb)
         return debugobj_r.remote_object_tree_item(item)
 
 

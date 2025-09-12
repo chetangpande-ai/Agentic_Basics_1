@@ -58,18 +58,19 @@ except ImportError:
     grp = None
 
 # os.symlink on Windows prior to 6.0 raises NotImplementedError
-# OSError (winerror=1314) will be raised if the caller does not hold the
-# SeCreateSymbolicLinkPrivilege privilege
-symlink_exception = (AttributeError, NotImplementedError, OSError)
+symlink_exception = (AttributeError, NotImplementedError)
+try:
+    # OSError (winerror=1314) will be raised if the caller does not hold the
+    # SeCreateSymbolicLinkPrivilege privilege
+    symlink_exception += (OSError,)
+except NameError:
+    pass
 
 # from tarfile import *
 __all__ = ["TarFile", "TarInfo", "is_tarfile", "TarError", "ReadError",
            "CompressionError", "StreamError", "ExtractError", "HeaderError",
            "ENCODING", "USTAR_FORMAT", "GNU_FORMAT", "PAX_FORMAT",
-           "DEFAULT_FORMAT", "open","fully_trusted_filter", "data_filter",
-           "tar_filter", "FilterError", "AbsoluteLinkError",
-           "OutsideDestinationError", "SpecialFileError", "AbsolutePathError",
-           "LinkOutsideDestinationError"]
+           "DEFAULT_FORMAT", "open"]
 
 
 #---------------------------------------------------------
@@ -331,17 +332,15 @@ class _LowLevelFile:
 class _Stream:
     """Class that serves as an adapter between TarFile and
        a stream-like object.  The stream-like object only
-       needs to have a read() or write() method that works with bytes,
-       and the method is accessed blockwise.
-       Use of gzip or bzip2 compression is possible.
-       A stream-like object could be for example: sys.stdin.buffer,
-       sys.stdout.buffer, a socket, a tape device etc.
+       needs to have a read() or write() method and is accessed
+       blockwise.  Use of gzip or bzip2 compression is possible.
+       A stream-like object could be for example: sys.stdin,
+       sys.stdout, a socket, a tape device etc.
 
        _Stream is intended to be used only internally.
     """
 
-    def __init__(self, name, mode, comptype, fileobj, bufsize,
-                 compresslevel):
+    def __init__(self, name, mode, comptype, fileobj, bufsize):
         """Construct a _Stream object.
         """
         self._extfileobj = True
@@ -373,10 +372,10 @@ class _Stream:
                 self.zlib = zlib
                 self.crc = zlib.crc32(b"")
                 if mode == "r":
-                    self.exception = zlib.error
                     self._init_read_gz()
+                    self.exception = zlib.error
                 else:
-                    self._init_write_gz(compresslevel)
+                    self._init_write_gz()
 
             elif comptype == "bz2":
                 try:
@@ -388,7 +387,7 @@ class _Stream:
                     self.cmp = bz2.BZ2Decompressor()
                     self.exception = OSError
                 else:
-                    self.cmp = bz2.BZ2Compressor(compresslevel)
+                    self.cmp = bz2.BZ2Compressor()
 
             elif comptype == "xz":
                 try:
@@ -415,14 +414,13 @@ class _Stream:
         if hasattr(self, "closed") and not self.closed:
             self.close()
 
-    def _init_write_gz(self, compresslevel):
+    def _init_write_gz(self):
         """Initialize for writing with gzip compression.
         """
-        self.cmp = self.zlib.compressobj(compresslevel,
-                                         self.zlib.DEFLATED,
-                                         -self.zlib.MAX_WBITS,
-                                         self.zlib.DEF_MEM_LEVEL,
-                                         0)
+        self.cmp = self.zlib.compressobj(9, self.zlib.DEFLATED,
+                                            -self.zlib.MAX_WBITS,
+                                            self.zlib.DEF_MEM_LEVEL,
+                                            0)
         timestamp = struct.pack("<L", int(time.time()))
         self.__write(b"\037\213\010\010" + timestamp + b"\002\377")
         if self.name.endswith(".gz"):
@@ -609,12 +607,12 @@ class _FileInFile(object):
        object.
     """
 
-    def __init__(self, fileobj, offset, size, name, blockinfo=None):
+    def __init__(self, fileobj, offset, size, blockinfo=None):
         self.fileobj = fileobj
         self.offset = offset
         self.size = size
         self.position = 0
-        self.name = name
+        self.name = getattr(fileobj, "name", None)
         self.closed = False
 
         if blockinfo is None:
@@ -711,7 +709,7 @@ class ExFileObject(io.BufferedReader):
 
     def __init__(self, tarfile, tarinfo):
         fileobj = _FileInFile(tarfile.fileobj, tarinfo.offset_data,
-                tarinfo.size, tarinfo.name, tarinfo.sparse)
+                tarinfo.size, tarinfo.sparse)
         super().__init__(fileobj)
 #class ExFileObject
 
@@ -1879,9 +1877,7 @@ class TarFile(object):
             if filemode not in ("r", "w"):
                 raise ValueError("mode must be 'r' or 'w'")
 
-            compresslevel = kwargs.pop("compresslevel", 9)
-            stream = _Stream(name, filemode, comptype, fileobj, bufsize,
-                             compresslevel)
+            stream = _Stream(name, filemode, comptype, fileobj, bufsize)
             try:
                 t = cls(name, filemode, stream, **kwargs)
             except:
@@ -2268,11 +2264,6 @@ class TarFile(object):
         if filter is None:
             filter = self.extraction_filter
             if filter is None:
-                warnings.warn(
-                    'Python 3.14 will, by default, filter extracted tar '
-                    + 'archives and reject files or modify their metadata. '
-                    + 'Use the filter argument to control this behavior.',
-                    DeprecationWarning, stacklevel=3)
                 return fully_trusted_filter
             if isinstance(filter, str):
                 raise TypeError(
@@ -2549,8 +2540,7 @@ class TarFile(object):
                 # later in _extract_member().
                 os.mkdir(targetpath, 0o700)
         except FileExistsError:
-            if not os.path.isdir(targetpath):
-                raise
+            pass
 
     def makefile(self, tarinfo, targetpath):
         """Make a file called targetpath.
@@ -2725,8 +2715,6 @@ class TarFile(object):
 
         # Advance the file pointer.
         if self.offset != self.fileobj.tell():
-            if self.offset == 0:
-                return None
             self.fileobj.seek(self.offset - 1)
             if not self.fileobj.read(1):
                 raise ReadError("unexpected end of data")
@@ -2821,8 +2809,10 @@ class TarFile(object):
         """Read through the entire archive file and look for readable
            members.
         """
-        while self.next() is not None:
-            pass
+        while True:
+            tarinfo = self.next()
+            if tarinfo is None:
+                break
         self._loaded = True
 
     def _check(self, mode=None):
@@ -2916,9 +2906,7 @@ def is_tarfile(name):
     """
     try:
         if hasattr(name, "read"):
-            pos = name.tell()
             t = open(fileobj=name)
-            name.seek(pos)
         else:
             t = open(name)
         t.close()

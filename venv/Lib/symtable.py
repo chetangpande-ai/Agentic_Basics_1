@@ -62,8 +62,8 @@ class SymbolTable:
     def get_type(self):
         """Return the type of the symbol table.
 
-        The values returned are 'class', 'module', 'function',
-        'annotation', 'TypeVar bound', 'type alias', and 'type parameter'.
+        The values retuned are 'class', 'module' and
+        'function'.
         """
         if self._table.type == _symtable.TYPE_MODULE:
             return "module"
@@ -71,15 +71,8 @@ class SymbolTable:
             return "function"
         if self._table.type == _symtable.TYPE_CLASS:
             return "class"
-        if self._table.type == _symtable.TYPE_ANNOTATION:
-            return "annotation"
-        if self._table.type == _symtable.TYPE_TYPE_VAR_BOUND:
-            return "TypeVar bound"
-        if self._table.type == _symtable.TYPE_TYPE_ALIAS:
-            return "type alias"
-        if self._table.type == _symtable.TYPE_TYPE_PARAM:
-            return "type parameter"
-        assert False, f"unexpected type: {self._table.type}"
+        assert self._table.type in (1, 2, 3), \
+               "unexpected type: {0}".format(self._table.type)
 
     def get_id(self):
         """Return an identifier for the table.
@@ -217,37 +210,8 @@ class Class(SymbolTable):
         """
         if self.__methods is None:
             d = {}
-
-            def is_local_symbol(ident):
-                flags = self._table.symbols.get(ident, 0)
-                return ((flags >> SCOPE_OFF) & SCOPE_MASK) == LOCAL
-
             for st in self._table.children:
-                # pick the function-like symbols that are local identifiers
-                if is_local_symbol(st.name):
-                    match st.type:
-                        case _symtable.TYPE_FUNCTION:
-                            # generators are of type TYPE_FUNCTION with a ".0"
-                            # parameter as a first parameter (which makes them
-                            # distinguishable from a function named 'genexpr')
-                            if st.name == 'genexpr' and '.0' in st.varnames:
-                                continue
-                            d[st.name] = 1
-                        case _symtable.TYPE_TYPE_PARAM:
-                            # Get the function-def block in the annotation
-                            # scope 'st' with the same identifier, if any.
-                            scope_name = st.name
-                            for c in st.children:
-                                if c.name == scope_name and c.type == _symtable.TYPE_FUNCTION:
-                                    # A generic generator of type TYPE_FUNCTION
-                                    # cannot be a direct child of 'st' (but it
-                                    # can be a descendant), e.g.:
-                                    #
-                                    # class A:
-                                    #   type genexpr[genexpr] = (x for x in [])
-                                    assert scope_name != 'genexpr' or '.0' not in c.varnames
-                                    d[scope_name] = 1
-                                    break
+                d[st.name] = 1
             self.__methods = tuple(d)
         return self.__methods
 
@@ -281,7 +245,7 @@ class Symbol:
         return bool(self.__flags & DEF_PARAM)
 
     def is_global(self):
-        """Return *True* if the symbol is global.
+        """Return *True* if the sysmbol is global.
         """
         return bool(self.__scope in (GLOBAL_IMPLICIT, GLOBAL_EXPLICIT)
                     or (self.__module_scope and self.__flags & DEF_BOUND))
@@ -342,15 +306,11 @@ class Symbol:
     def get_namespace(self):
         """Return the single namespace bound to this name.
 
-        Raises ValueError if the name is bound to multiple namespaces
-        or no namespace.
+        Raises ValueError if the name is bound to multiple namespaces.
         """
-        if len(self.__namespaces) == 0:
-            raise ValueError("name is not bound to any namespaces")
-        elif len(self.__namespaces) > 1:
+        if len(self.__namespaces) != 1:
             raise ValueError("name is bound to multiple namespaces")
-        else:
-            return self.__namespaces[0]
+        return self.__namespaces[0]
 
 if __name__ == "__main__":
     import os, sys

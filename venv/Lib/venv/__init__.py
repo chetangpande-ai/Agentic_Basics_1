@@ -14,7 +14,7 @@ import types
 import shlex
 
 
-CORE_VENV_DEPS = ('pip',)
+CORE_VENV_DEPS = ('pip', 'setuptools')
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +52,6 @@ class EnvBuilder:
         self.symlinks = symlinks
         self.upgrade = upgrade
         self.with_pip = with_pip
-        self.orig_prompt = prompt
         if prompt == '.':  # see bpo-38901
             prompt = os.path.basename(os.getcwd())
         self.prompt = prompt
@@ -94,42 +93,6 @@ class EnvBuilder:
             elif os.path.isdir(fn):
                 shutil.rmtree(fn)
 
-    def _venv_path(self, env_dir, name):
-        vars = {
-            'base': env_dir,
-            'platbase': env_dir,
-            'installed_base': env_dir,
-            'installed_platbase': env_dir,
-        }
-        return sysconfig.get_path(name, scheme='venv', vars=vars)
-
-    @classmethod
-    def _same_path(cls, path1, path2):
-        """Check whether two paths appear the same.
-
-        Whether they refer to the same file is irrelevant; we're testing for
-        whether a human reader would look at the path string and easily tell
-        that they're the same file.
-        """
-        if sys.platform == 'win32':
-            if os.path.normcase(path1) == os.path.normcase(path2):
-                return True
-            # gh-90329: Don't display a warning for short/long names
-            import _winapi
-            try:
-                path1 = _winapi.GetLongPathName(os.fsdecode(path1))
-            except OSError:
-                pass
-            try:
-                path2 = _winapi.GetLongPathName(os.fsdecode(path2))
-            except OSError:
-                pass
-            if os.path.normcase(path1) == os.path.normcase(path2):
-                return True
-            return False
-        else:
-            return path1 == path2
-
     def ensure_directories(self, env_dir):
         """
         Create the directories for the environment.
@@ -144,9 +107,6 @@ class EnvBuilder:
             elif os.path.islink(d) or os.path.isfile(d):
                 raise ValueError('Unable to create directory %r' % d)
 
-        if os.pathsep in os.fspath(env_dir):
-            raise ValueError(f'Refusing to create a venv in {env_dir} because '
-                             f'it contains the PATH separator {os.pathsep}.')
         if os.path.exists(env_dir) and self.clear:
             self.clear_directory(env_dir)
         context = types.SimpleNamespace()
@@ -165,13 +125,18 @@ class EnvBuilder:
         context.executable = executable
         context.python_dir = dirname
         context.python_exe = exename
-        binpath = self._venv_path(env_dir, 'scripts')
-        incpath = self._venv_path(env_dir, 'include')
-        libpath = self._venv_path(env_dir, 'purelib')
-
-        context.inc_path = incpath
-        create_if_needed(incpath)
-        context.lib_path = libpath
+        if sys.platform == 'win32':
+            binname = 'Scripts'
+            incpath = 'Include'
+            libpath = os.path.join(env_dir, 'Lib', 'site-packages')
+        else:
+            binname = 'bin'
+            incpath = 'include'
+            libpath = os.path.join(env_dir, 'lib',
+                                   'python%d.%d' % sys.version_info[:2],
+                                   'site-packages')
+        context.inc_path = path = os.path.join(env_dir, incpath)
+        create_if_needed(path)
         create_if_needed(libpath)
         # Issue 21197: create lib64 as a symlink to lib on 64-bit non-OS X POSIX
         if ((sys.maxsize > 2**32) and (os.name == 'posix') and
@@ -179,8 +144,8 @@ class EnvBuilder:
             link_path = os.path.join(env_dir, 'lib64')
             if not os.path.exists(link_path):   # Issue #21643
                 os.symlink('lib', link_path)
-        context.bin_path = binpath
-        context.bin_name = os.path.relpath(binpath, env_dir)
+        context.bin_path = binpath = os.path.join(env_dir, binname)
+        context.bin_name = binname
         context.env_exe = os.path.join(binpath, exename)
         create_if_needed(binpath)
         # Assign and update the command to use when launching the newly created
@@ -190,7 +155,7 @@ class EnvBuilder:
             # bpo-45337: Fix up env_exec_cmd to account for file system redirections.
             # Some redirects only apply to CreateFile and not CreateProcess
             real_env_exe = os.path.realpath(context.env_exe)
-            if not self._same_path(real_env_exe, context.env_exe):
+            if os.path.normcase(real_env_exe) != os.path.normcase(context.env_exe):
                 logger.warning('Actual environment location may have moved due to '
                                'redirects, links or junctions.\n'
                                '  Requested location: "%s"\n'
@@ -219,29 +184,6 @@ class EnvBuilder:
             f.write('version = %d.%d.%d\n' % sys.version_info[:3])
             if self.prompt is not None:
                 f.write(f'prompt = {self.prompt!r}\n')
-            f.write('executable = %s\n' % os.path.realpath(sys.executable))
-            args = []
-            nt = os.name == 'nt'
-            if nt and self.symlinks:
-                args.append('--symlinks')
-            if not nt and not self.symlinks:
-                args.append('--copies')
-            if not self.with_pip:
-                args.append('--without-pip')
-            if self.system_site_packages:
-                args.append('--system-site-packages')
-            if self.clear:
-                args.append('--clear')
-            if self.upgrade:
-                args.append('--upgrade')
-            if self.upgrade_deps:
-                args.append('--upgrade-deps')
-            if self.orig_prompt is not None:
-                args.append(f'--prompt="{self.orig_prompt}"')
-
-            args.append(context.env_dir)
-            args = ' '.join(args)
-            f.write(f'command = {sys.executable} -m venv {args}\n')
 
     if os.name != 'nt':
         def symlink_or_copy(self, src, dst, relative_symlinks_ok=False):
@@ -251,7 +193,7 @@ class EnvBuilder:
             force_copy = not self.symlinks
             if not force_copy:
                 try:
-                    if not os.path.islink(dst):  # can't link to itself!
+                    if not os.path.islink(dst): # can't link to itself!
                         if relative_symlinks_ok:
                             assert os.path.dirname(src) == os.path.dirname(dst)
                             os.symlink(os.path.basename(src), dst)
@@ -288,7 +230,7 @@ class EnvBuilder:
                                  basename + ext)
             # Builds or venv's from builds need to remap source file
             # locations, as we do not put them into Lib/venv/scripts
-            if sysconfig.is_python_build() or not os.path.isfile(srcfn):
+            if sysconfig.is_python_build(True) or not os.path.isfile(srcfn):
                 if basename.endswith('_d'):
                     ext = '_d' + ext
                     basename = basename[:-2]
@@ -339,7 +281,7 @@ class EnvBuilder:
                     f for f in os.listdir(dirname) if
                     os.path.normcase(os.path.splitext(f)[1]) in ('.exe', '.dll')
                 ]
-                if sysconfig.is_python_build():
+                if sysconfig.is_python_build(True):
                     suffixes = [
                         f for f in suffixes if
                         os.path.normcase(f).startswith(('python', 'vcruntime'))
@@ -354,7 +296,7 @@ class EnvBuilder:
                 if os.path.lexists(src):
                     copier(src, os.path.join(binpath, suffix))
 
-            if sysconfig.is_python_build():
+            if sysconfig.is_python_build(True):
                 # copy init.tcl
                 for root, dirs, files in os.walk(context.python_dir):
                     if 'init.tcl' in files:
@@ -476,11 +418,11 @@ class EnvBuilder:
         binpath = context.bin_path
         plen = len(path)
         for root, dirs, files in os.walk(path):
-            if root == path:  # at top-level, remove irrelevant dirs
+            if root == path: # at top-level, remove irrelevant dirs
                 for d in dirs[:]:
                     if d not in ('common', os.name):
                         dirs.remove(d)
-                continue  # ignore files in top level
+                continue # ignore files in top level
             for f in files:
                 if (os.name == 'nt' and f.startswith('python')
                         and f.endswith(('.exe', '.pdb'))):
@@ -527,76 +469,83 @@ def create(env_dir, system_site_packages=False, clear=False,
                          prompt=prompt, upgrade_deps=upgrade_deps)
     builder.create(env_dir)
 
-
 def main(args=None):
-    import argparse
-
-    parser = argparse.ArgumentParser(prog=__name__,
-                                     description='Creates virtual Python '
-                                                 'environments in one or '
-                                                 'more target '
-                                                 'directories.',
-                                     epilog='Once an environment has been '
-                                            'created, you may wish to '
-                                            'activate it, e.g. by '
-                                            'sourcing an activate script '
-                                            'in its bin directory.')
-    parser.add_argument('dirs', metavar='ENV_DIR', nargs='+',
-                        help='A directory to create the environment in.')
-    parser.add_argument('--system-site-packages', default=False,
-                        action='store_true', dest='system_site',
-                        help='Give the virtual environment access to the '
-                             'system site-packages dir.')
-    if os.name == 'nt':
-        use_symlinks = False
+    compatible = True
+    if sys.version_info < (3, 3):
+        compatible = False
+    elif not hasattr(sys, 'base_prefix'):
+        compatible = False
+    if not compatible:
+        raise ValueError('This script is only for use with Python >= 3.3')
     else:
-        use_symlinks = True
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('--symlinks', default=use_symlinks,
-                       action='store_true', dest='symlinks',
-                       help='Try to use symlinks rather than copies, '
-                            'when symlinks are not the default for '
-                            'the platform.')
-    group.add_argument('--copies', default=not use_symlinks,
-                       action='store_false', dest='symlinks',
-                       help='Try to use copies rather than symlinks, '
-                            'even when symlinks are the default for '
-                            'the platform.')
-    parser.add_argument('--clear', default=False, action='store_true',
-                        dest='clear', help='Delete the contents of the '
-                                           'environment directory if it '
-                                           'already exists, before '
-                                           'environment creation.')
-    parser.add_argument('--upgrade', default=False, action='store_true',
-                        dest='upgrade', help='Upgrade the environment '
-                                             'directory to use this version '
-                                             'of Python, assuming Python '
-                                             'has been upgraded in-place.')
-    parser.add_argument('--without-pip', dest='with_pip',
-                        default=True, action='store_false',
-                        help='Skips installing or upgrading pip in the '
-                             'virtual environment (pip is bootstrapped '
-                             'by default)')
-    parser.add_argument('--prompt',
-                        help='Provides an alternative prompt prefix for '
-                             'this environment.')
-    parser.add_argument('--upgrade-deps', default=False, action='store_true',
-                        dest='upgrade_deps',
-                        help=f'Upgrade core dependencies ({", ".join(CORE_VENV_DEPS)}) '
-                             'to the latest version in PyPI')
-    options = parser.parse_args(args)
-    if options.upgrade and options.clear:
-        raise ValueError('you cannot supply --upgrade and --clear together.')
-    builder = EnvBuilder(system_site_packages=options.system_site,
-                         clear=options.clear,
-                         symlinks=options.symlinks,
-                         upgrade=options.upgrade,
-                         with_pip=options.with_pip,
-                         prompt=options.prompt,
-                         upgrade_deps=options.upgrade_deps)
-    for d in options.dirs:
-        builder.create(d)
+        import argparse
 
+        parser = argparse.ArgumentParser(prog=__name__,
+                                         description='Creates virtual Python '
+                                                     'environments in one or '
+                                                     'more target '
+                                                     'directories.',
+                                         epilog='Once an environment has been '
+                                                'created, you may wish to '
+                                                'activate it, e.g. by '
+                                                'sourcing an activate script '
+                                                'in its bin directory.')
+        parser.add_argument('dirs', metavar='ENV_DIR', nargs='+',
+                            help='A directory to create the environment in.')
+        parser.add_argument('--system-site-packages', default=False,
+                            action='store_true', dest='system_site',
+                            help='Give the virtual environment access to the '
+                                 'system site-packages dir.')
+        if os.name == 'nt':
+            use_symlinks = False
+        else:
+            use_symlinks = True
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument('--symlinks', default=use_symlinks,
+                           action='store_true', dest='symlinks',
+                           help='Try to use symlinks rather than copies, '
+                                'when symlinks are not the default for '
+                                'the platform.')
+        group.add_argument('--copies', default=not use_symlinks,
+                           action='store_false', dest='symlinks',
+                           help='Try to use copies rather than symlinks, '
+                                'even when symlinks are the default for '
+                                'the platform.')
+        parser.add_argument('--clear', default=False, action='store_true',
+                            dest='clear', help='Delete the contents of the '
+                                               'environment directory if it '
+                                               'already exists, before '
+                                               'environment creation.')
+        parser.add_argument('--upgrade', default=False, action='store_true',
+                            dest='upgrade', help='Upgrade the environment '
+                                               'directory to use this version '
+                                               'of Python, assuming Python '
+                                               'has been upgraded in-place.')
+        parser.add_argument('--without-pip', dest='with_pip',
+                            default=True, action='store_false',
+                            help='Skips installing or upgrading pip in the '
+                                 'virtual environment (pip is bootstrapped '
+                                 'by default)')
+        parser.add_argument('--prompt',
+                            help='Provides an alternative prompt prefix for '
+                                 'this environment.')
+        parser.add_argument('--upgrade-deps', default=False, action='store_true',
+                            dest='upgrade_deps',
+                            help='Upgrade core dependencies: {} to the latest '
+                                 'version in PyPI'.format(
+                                 ' '.join(CORE_VENV_DEPS)))
+        options = parser.parse_args(args)
+        if options.upgrade and options.clear:
+            raise ValueError('you cannot supply --upgrade and --clear together.')
+        builder = EnvBuilder(system_site_packages=options.system_site,
+                             clear=options.clear,
+                             symlinks=options.symlinks,
+                             upgrade=options.upgrade,
+                             with_pip=options.with_pip,
+                             prompt=options.prompt,
+                             upgrade_deps=options.upgrade_deps)
+        for d in options.dirs:
+            builder.create(d)
 
 if __name__ == '__main__':
     rc = 1

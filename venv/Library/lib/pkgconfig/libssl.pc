@@ -1,4 +1,4 @@
-prefix=D:/Chetan Pande/AI-ML-2025/agentic-ai-2.0/AgenticBasics-1/venv/Library 
+prefix=D:/Chetan Pande/AI-ML-2025/agentic-ai-2.0/Agentic_Basics_1/venv/Library 
 exec_prefix=${prefix}
 libdir=${exec_prefix}/lib
 includedir=${prefix}/include

@@ -7,7 +7,7 @@
     "ucrt >=10.0.20348.0",
     "vc >=14.2,<15",
     "vc14_runtime >=14.29.30133",
-    "zlib >=1.2.13,<1.3.0a0"
+    "zlib >=1.2.13,<2.0.0a0"
   ],
   "extracted_package_dir": "C:\\Users\\Ishan Pande\\miniconda3\\pkgs\\tk-8.6.15-hf199647_0",
   "files": [
@@ -7339,7 +7339,7 @@
         "path_type": "hardlink",
         "prefix_placeholder": "C:\\b\\abs_933obpeb5t\\croot\\tk_1755243793210\\_h_env",
         "sha256": "07a314b5b4649c9bc6e6cdc3b33ab5ea824e84cd52a5d468fa2eeeea107cc571",
-        "sha256_in_prefix": "475117b08a5ef16c59d5ae8e8ee2fa915c39341bf2b3eb3482358386aa26bab9",
+        "sha256_in_prefix": "35747ae64e1a8ee5cde977e9cc06cd42373f6bbcb7301353d5f2dd1494e63d5c",
         "size_in_bytes": 8210
       },
       {

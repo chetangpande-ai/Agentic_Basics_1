@@ -207,13 +207,7 @@ def _normalize_module(module, depth=2):
     elif isinstance(module, str):
         return __import__(module, globals(), locals(), ["*"])
     elif module is None:
-        try:
-            try:
-                return sys.modules[sys._getframemodulename(depth)]
-            except AttributeError:
-                return sys.modules[sys._getframe(depth).f_globals['__name__']]
-        except KeyError:
-            pass
+        return sys.modules[sys._getframe(depth).f_globals['__name__']]
     else:
         raise TypeError("Expected a module, string, or None")
 
@@ -575,11 +569,9 @@ class DocTest:
     def __lt__(self, other):
         if not isinstance(other, DocTest):
             return NotImplemented
-        self_lno = self.lineno if self.lineno is not None else -1
-        other_lno = other.lineno if other.lineno is not None else -1
-        return ((self.name, self.filename, self_lno, id(self))
+        return ((self.name, self.filename, self.lineno, id(self))
                 <
-                (other.name, other.filename, other_lno, id(other)))
+                (other.name, other.filename, other.lineno, id(other)))
 
 ######################################################################
 ## 3. DocTestParser
@@ -964,8 +956,7 @@ class DocTestFinder:
             return module is inspect.getmodule(object)
         elif inspect.isfunction(object):
             return module.__dict__ is object.__globals__
-        elif (inspect.ismethoddescriptor(object) or
-              inspect.ismethodwrapper(object)):
+        elif inspect.ismethoddescriptor(object):
             if hasattr(object, '__objclass__'):
                 obj_mod = object.__objclass__.__module__
             elif hasattr(object, '__module__'):
@@ -1112,7 +1103,7 @@ class DocTestFinder:
             if source_lines is None:
                 return None
             pat = re.compile(r'^\s*class\s*%s\b' %
-                             re.escape(getattr(obj, '__name__', '-')))
+                             getattr(obj, '__name__', '-'))
             for i, line in enumerate(source_lines):
                 if pat.match(line):
                     lineno = i
@@ -1120,22 +1111,13 @@ class DocTestFinder:
 
         # Find the line number for functions & methods.
         if inspect.ismethod(obj): obj = obj.__func__
-        if isinstance(obj, property):
-            obj = obj.fget
         if inspect.isfunction(obj) and getattr(obj, '__doc__', None):
             # We don't use `docstring` var here, because `obj` can be changed.
-            obj = inspect.unwrap(obj)
-            try:
-                obj = obj.__code__
-            except AttributeError:
-                # Functions implemented in C don't necessarily
-                # have a __code__ attribute.
-                # If there's no code, there's no lineno
-                return None
+            obj = obj.__code__
         if inspect.istraceback(obj): obj = obj.tb_frame
         if inspect.isframe(obj): obj = obj.f_code
         if inspect.iscode(obj):
-            lineno = obj.co_firstlineno - 1
+            lineno = getattr(obj, 'co_firstlineno', None)-1
 
         # Find the line number where the docstring starts.  Assume
         # that it's the first line that begins with a quote mark.
@@ -1387,24 +1369,7 @@ class DocTestRunner:
 
             # The example raised an exception:  check if it was expected.
             else:
-                formatted_ex = traceback.format_exception_only(*exception[:2])
-                if issubclass(exception[0], SyntaxError):
-                    # SyntaxError / IndentationError is special:
-                    # we don't care about the carets / suggestions / etc
-                    # We only care about the error message and notes.
-                    # They start with `SyntaxError:` (or any other class name)
-                    exception_line_prefixes = (
-                        f"{exception[0].__qualname__}:",
-                        f"{exception[0].__module__}.{exception[0].__qualname__}:",
-                    )
-                    exc_msg_index = next(
-                        index
-                        for index, line in enumerate(formatted_ex)
-                        if line.startswith(exception_line_prefixes)
-                    )
-                    formatted_ex = formatted_ex[exc_msg_index:]
-
-                exc_msg = "".join(formatted_ex)
+                exc_msg = traceback.format_exception_only(*exception[:2])[-1]
                 if not quiet:
                     got += _exception_traceback(exception)
 
@@ -2210,13 +2175,13 @@ class DocTestCase(unittest.TestCase):
         unittest.TestCase.__init__(self)
         self._dt_optionflags = optionflags
         self._dt_checker = checker
+        self._dt_globs = test.globs.copy()
         self._dt_test = test
         self._dt_setUp = setUp
         self._dt_tearDown = tearDown
 
     def setUp(self):
         test = self._dt_test
-        self._dt_globs = test.globs.copy()
 
         if self._dt_setUp is not None:
             self._dt_setUp(test)
