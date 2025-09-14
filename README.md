@@ -20,3 +20,17 @@ class User(BaseModel):
     email: str = "default@example.com"  # Optional with default value
 
 ```
+
+# Langchain 
+
+
+## Companies and LLM Models
+```
+Google- Gemini
+Meta-Lama
+AWS-Cloud
+Anthropic-Claude
+OpenAI-GPT
+Microsfot-Cloud
+Grok-Grok
+```

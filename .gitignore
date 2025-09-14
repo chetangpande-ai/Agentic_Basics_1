@@ -5,6 +5,9 @@ __pycache__/
 venv/
 .venv/
 
+# Environement file containing LLM KEYS
+.env
+
 # IDE settings
 .vscode/
 .idea/
